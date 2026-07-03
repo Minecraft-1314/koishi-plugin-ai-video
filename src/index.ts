@@ -38,12 +38,12 @@ export const Config = Schema.intersect([
 
   Schema.object({
     proxyEnabled: Schema.boolean().default(false).description('启用代理'),
-    proxyProtocol: Schema.union([Schema.const('http'), Schema.const('https')]).default('http'),
-    proxyHost: Schema.string().default(''),
-    proxyPort: Schema.number().default(8080),
-    proxyAuth: Schema.boolean().default(false),
-    proxyUsername: Schema.string().default(''),
-    proxyPassword: Schema.string().role('secret').default(''),
+    proxyProtocol: Schema.union([Schema.const('http'), Schema.const('https')]).default('http').description('代理协议'),
+    proxyHost: Schema.string().default('').description('代理主机地址'),
+    proxyPort: Schema.number().default(8080).description('代理端口'),
+    proxyAuth: Schema.boolean().default(false).description('启用代理认证'),
+    proxyUsername: Schema.string().default('').description('代理用户名'),
+    proxyPassword: Schema.string().role('secret').default('').description('代理密码'),
   }).description('代理设置'),
 
   Schema.object({
@@ -52,28 +52,32 @@ export const Config = Schema.intersect([
     apiKey: Schema.string().role('secret').default('').description('API密钥'),
     model: Schema.string().default('agnes-video-v2.0').description('模型'),
     img2videoModel: Schema.string().default('').description('图生视频模型'),
-    videoDuration: Schema.number().default(0).description('时长'),
-    videoResolution: Schema.string().default('').description('分辨率'),
+    videoDuration: Schema.number().default(0).description('默认视频时长（秒）'),
+    videoResolution: Schema.string().default('').description('默认视频分辨率（宽x高）'),
     txt2videoPrompt: Schema.string().default('').description('文生视频提示模板'),
     img2videoPrompt: Schema.string().default('').description('图生视频提示模板'),
-    customHeaders: Schema.string().role('textarea').default('{}').description('自定义请求头'),
+    customHeaders: Schema.string().role('textarea').default('{}').description('自定义请求头(JSON)'),
   }).description('内置API'),
 
   Schema.object({
-    apiStrategy: Schema.union([Schema.const('sequence'), Schema.const('roundrobin')]).default('roundrobin'),
+    apiStrategy: Schema.union([
+      Schema.const('sequence').description('顺序使用'),
+      Schema.const('roundrobin').description('轮询使用')
+    ]).default('roundrobin').description('API调用策略'),
     customApiList: Schema.array(
       Schema.object({
-        enable: Schema.boolean().default(true),
-        endpoint: Schema.string().default('https://apihub.agnes-ai.com/v1/videos'),
-        apiKey: Schema.string().role('secret').default(''),
-        model: Schema.string().default('agnes-video-v2.0'),
-        img2videoModel: Schema.string().default(''),
-        videoDuration: Schema.number().default(0),
-        videoResolution: Schema.string().default(''),
-        txt2videoPrompt: Schema.string().default(''),
-        img2videoPrompt: Schema.string().default(''),
+        enable: Schema.boolean().default(true).description('启用'),
+        endpoint: Schema.string().default('https://apihub.agnes-ai.com/v1/videos').description('API端点'),
+        apiKey: Schema.string().role('secret').default('').description('API密钥'),
+        model: Schema.string().default('agnes-video-v2.0').description('模型'),
+        img2videoModel: Schema.string().default('').description('图生视频模型'),
+        videoDuration: Schema.number().default(0).description('默认视频时长（秒）'),
+        videoResolution: Schema.string().default('').description('默认视频分辨率（宽x高）'),
+        txt2videoPrompt: Schema.string().default('').description('文生视频提示模板'),
+        img2videoPrompt: Schema.string().default('').description('图生视频提示模板'),
         customHeaders: Schema.string().role('textarea')
-          .default('{"Authorization":"Bearer {apiKey}","Content-Type":"application/json"}'),
+          .default('{"Authorization":"Bearer {apiKey}","Content-Type":"application/json"}')
+          .description('自定义请求头(JSON)'),
         bodyTemplate: Schema.string().role('textarea')
           .default(JSON.stringify({
             txt2videoBody: { model: '{model}', prompt: '{prompt}', height: 768, width: 1152, num_frames: 121, frame_rate: 24 },
@@ -82,13 +86,13 @@ export const Config = Schema.intersect([
             pollUrlTemplate: 'https://apihub.agnes-ai.com/agnesapi?video_id={task_id}',
             taskIdPath: 'video_id',
           }, null, 2))
-          .description('自定义请求体'),
+          .description('自定义请求体(JSON模板)'),
       })
     ).default([]).description('自定义API列表'),
   }).description('自定义API配置'),
 
   Schema.object({
-    blacklistAdmins: Schema.array(String).default([]).description('管理员QQ'),
+    blacklistAdmins: Schema.array(String).default([]).description('管理员QQ号'),
   }).description('权限管理'),
 
   Schema.object({
@@ -192,9 +196,6 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
   }
   function recordApiCall() { apiCallTimestamps.push(Date.now()) }
 
-  const BUILTIN_TXT2VIDEO = { model: '{model}', prompt: '{prompt}', duration: '{duration}', size: '{size}' }
-  const BUILTIN_IMG2VIDEO = { model: '{model}', prompt: '{prompt}', duration: '{duration}', size: '{size}', image_url: '{url}' }
-
   function parseApiEntry(entry: any): ParsedApi | null {
     if (!entry.endpoint) return null
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -210,15 +211,15 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
     if (entry.bodyTemplate) {
       try {
         const tmpl = JSON.parse(entry.bodyTemplate)
-        txt2videoBody = tmpl.txt2videoBody || BUILTIN_TXT2VIDEO
-        img2videoBody = tmpl.img2videoBody || BUILTIN_IMG2VIDEO
+        txt2videoBody = tmpl.txt2videoBody || { model: '{model}', prompt: '{prompt}', duration: '{duration}', size: '{size}' }
+        img2videoBody = tmpl.img2videoBody || { model: '{model}', prompt: '{prompt}', duration: '{duration}', size: '{size}', image_url: '{url}' }
         responseVideoPath = tmpl.responseVideoPath || 'video_url'
         pollUrlTemplate = tmpl.pollUrlTemplate || ''
         taskIdPath = tmpl.taskIdPath || ''
       } catch { return null }
     } else {
-      txt2videoBody = BUILTIN_TXT2VIDEO
-      img2videoBody = BUILTIN_IMG2VIDEO
+      txt2videoBody = { model: '{model}', prompt: '{prompt}', duration: '{duration}', size: '{size}' }
+      img2videoBody = { model: '{model}', prompt: '{prompt}', duration: '{duration}', size: '{size}', image_url: '{url}' }
       responseVideoPath = 'video_url'
       pollUrlTemplate = ''
       taskIdPath = ''
@@ -253,8 +254,8 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
     return {
       endpoint: cfg.apiEndpoint || 'https://apihub.agnes-ai.com/v1/videos',
       headers,
-      txt2videoBody: BUILTIN_TXT2VIDEO,
-      img2videoBody: BUILTIN_IMG2VIDEO,
+      txt2videoBody: { model: '{model}', prompt: '{prompt}', duration: '{duration}', size: '{size}' },
+      img2videoBody: { model: '{model}', prompt: '{prompt}', duration: '{duration}', size: '{size}', image_url: '{url}' },
       responseVideoPath: 'video_url',
       pollUrlTemplate: '',
       taskIdPath: '',
@@ -284,14 +285,26 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
     }
   }
 
-  function resolveTemplate(template: any, vars: Record<string, any>): any {
-    const jsonStr = JSON.stringify(template)
-    let processed = jsonStr
-    for (const [key, value] of Object.entries(vars)) {
-      if (value === undefined || value === null) continue
-      processed = processed.replace(new RegExp(`\\{${key}\\}`, 'g'), JSON.stringify(String(value)).slice(1, -1))
+  function resolveTemplate(templateObj: any, vars: Record<string, any>): any {
+    if (templateObj === null || templateObj === undefined) return templateObj
+    if (typeof templateObj === 'string') {
+      const match = templateObj.match(/^\{(\w+)\}$/)
+      if (match && vars.hasOwnProperty(match[1])) {
+        return vars[match[1]]
+      }
+      return templateObj
     }
-    return JSON.parse(processed)
+    if (Array.isArray(templateObj)) {
+      return templateObj.map(item => resolveTemplate(item, vars))
+    }
+    if (typeof templateObj === 'object') {
+      const result: any = {}
+      for (const key of Object.keys(templateObj)) {
+        result[key] = resolveTemplate(templateObj[key], vars)
+      }
+      return result
+    }
+    return templateObj
   }
 
   function getValueByPath(obj: any, path: string): any {
@@ -345,7 +358,7 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
     try { await session.send(msg) } catch (e) { logger.error('发送失败', e) }
   }
 
-  async function sendVideo(session: any, url: string) {
+  async function sendSingleVideo(session: any, url: string) {
     const mode = cfg.videoSendMode
     if (mode === 'url') await safeSend(session, url)
     else {
@@ -359,7 +372,7 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
     try { return JSON.parse(JSON.stringify(obj).split(sensitive).join('***')) } catch { return obj }
   }
 
-  async function customGenerateVideo(session: any, api: ParsedApi, prompt: string, imageUrl: string = '') {
+  async function customGenerateVideo(session: any, api: ParsedApi, prompt: string, imageUrl: string = ''): Promise<string | null> {
     const isImg2Video = !!imageUrl
     const model = isImg2Video ? (api.img2videoModel || api.model) : api.model
     const duration = api.videoDuration || cfg.videoDuration || 5
@@ -369,12 +382,23 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
     if (promptTemplate) finalPrompt = promptTemplate.replace('{prompt}', prompt).replace('{url}', imageUrl)
 
     const bodyTemplate = isImg2Video ? api.img2videoBody : api.txt2videoBody
-    const vars: Record<string, any> = { model, prompt: finalPrompt, duration: String(duration), size: resolution }
+    const vars: Record<string, any> = {
+      model,
+      prompt: finalPrompt,
+      duration,
+      size: resolution,
+    }
     if (isImg2Video) vars.url = imageUrl
 
     let body
-    try { body = resolveTemplate(bodyTemplate, vars) } catch { return safeSend(session, cfg.messages.fail + cfg.messages.templateError) }
-    if (!validateEndpoint(api.endpoint)) return safeSend(session, cfg.messages.fail + '（端点无效）')
+    try { body = resolveTemplate(bodyTemplate, vars) } catch {
+      await safeSend(session, cfg.messages.fail + cfg.messages.templateError)
+      return null
+    }
+    if (!validateEndpoint(api.endpoint)) {
+      await safeSend(session, cfg.messages.fail + '（端点无效）')
+      return null
+    }
 
     const sensitive = api.headers?.Authorization?.split(' ')[1] || ''
     if (debug) logger.info('API请求', JSON.stringify(sanitizeForLog(body, sensitive)))
@@ -391,29 +415,60 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
       if (cfg.pollEnabled && api.taskIdPath) {
         const taskId = getValueByPath(res, api.taskIdPath)
         if (taskId) {
-          const pollUrl = api.pollUrlTemplate.replace('{endpoint}', api.endpoint).replace('{task_id}', taskId)
-          safeSend(session, cfg.messages.pollWaiting)
+          const pollUrl = api.pollUrlTemplate.replace('{task_id}', taskId)
+          await safeSend(session, cfg.messages.pollWaiting)
           res = await pollForResult(pollUrl, api.headers, cfg.pollInterval, cfg.pollTimeout)
         }
       }
       const videoUrl = getValueByPath(res, api.responseVideoPath) || findVideoUrl(res)
-      if (videoUrl) await sendVideo(session, videoUrl)
-      else await safeSend(session, cfg.messages.fail + cfg.messages.noContent)
-
-      const userId = `${session.guildId || 'private'}-${session.userId}`
-      lastTaskMap.set(userId, { prompt, imageUrl, isImg2Video, model })
+      return videoUrl || null
     } catch (err) {
       logger.error('视频生成失败', err)
-      safeSend(session, cfg.messages.fail + ' [' + (err.message?.slice(0, 100) || '未知错误') + ']')
+      await safeSend(session, cfg.messages.fail + ' [' + (err.message?.slice(0, 100) || '未知错误') + ']')
+      return null
     }
   }
 
-  async function generateVideo(session: any, prompt: string, imageUrl: string = '') {
-    if (!checkRateLimit()) return safeSend(session, cfg.messages.rateLimit)
-    const api = getApi()
-    if (!api) return safeSend(session, cfg.messages.noApi)
-    recordApiCall()
-    return customGenerateVideo(session, api, prompt, imageUrl)
+  async function generateVideos(session: any, prompt: string, imageUrl: string, count: number) {
+    const videoUrls: string[] = []
+    for (let i = 0; i < count; i++) {
+      if (!checkRateLimit()) {
+        await safeSend(session, cfg.messages.rateLimit)
+        break
+      }
+      const api = getApi()
+      if (!api) {
+        await safeSend(session, cfg.messages.noApi)
+        break
+      }
+      recordApiCall()
+      const url = await customGenerateVideo(session, api, prompt, imageUrl)
+      if (url) videoUrls.push(url)
+      if (i < count - 1) await new Promise(r => setTimeout(r, 1000))
+    }
+
+    if (videoUrls.length === 0) {
+      await safeSend(session, cfg.messages.fail + cfg.messages.noContent)
+      return
+    }
+
+    if (videoUrls.length === 1 || !cfg.enableForward) {
+      for (const url of videoUrls) {
+        await sendSingleVideo(session, url)
+      }
+    } else {
+      const children = videoUrls.map(url => h('message', h.video(url)))
+      try {
+        await safeSend(session, h('message', { forward: true }, ...children))
+      } catch {
+        for (const url of videoUrls) await sendSingleVideo(session, url)
+      }
+    }
+
+    const userId = `${session.guildId || 'private'}-${session.userId}`
+    if (videoUrls.length > 0) {
+      lastTaskMap.set(userId, { prompt, imageUrl, isImg2Video: !!imageUrl, model: 'multiple' })
+    }
   }
 
   function startTimer(session: any, key: string, collect: CollectSession) {
@@ -448,6 +503,8 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
     })
 
   ctx.on('message', async (session: any) => {
+    if (session.command) return
+
     if (!session || !session.elements) return
     const key = `${session.guildId || 'private'}-${session.userId}`
     const collect = collectSessions.get(key)
@@ -467,7 +524,7 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
       collectSessions.delete(key)
       if (!collect.prompt && !collect.imageUrl) return safeSend(session, cfg.messages.empty)
       await safeSend(session, cfg.messages.generating)
-      return generateVideo(session, collect.prompt || '默认', collect.imageUrl)
+      return generateVideos(session, collect.prompt || '默认', collect.imageUrl, cfg.maxVideos)
     }
 
     if (imgs.length > 0 && !collect.imageUrl) {
@@ -501,7 +558,7 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
       if (!last) return safeSend(session, cfg.messages.noLastTask)
       if (last.isImg2Video) return safeSend(session, cfg.messages.redrawImg2Video)
       await safeSend(session, cfg.messages.redrawing)
-      return generateVideo(session, last.prompt)
+      return generateVideos(session, last.prompt, '', cfg.maxVideos)
     })
 
   function isValidQQ(id: string) { return /^\d{5,11}$/.test(id) }
