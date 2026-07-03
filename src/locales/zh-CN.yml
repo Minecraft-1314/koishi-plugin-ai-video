@@ -1,39 +1,36 @@
 commands:
   video:
-    description: AI视频生成（文生视频/图生视频自动识别）
-    usage: |
-      输入提示词直接生成视频。
-      若同时附带图片，自动切换为图生视频模式。
+    description: AI视频生成
+    usage: video [初始提示词] 进入收集，继续发送文字/图片，输入「开始」生成
   redraw:
     description: 重绘上一次文生视频
-    usage: 重新生成上一次的文生视频，无需再次输入提示词
   blacklist:
-    description: 黑名单管理（仅管理员）
-    usage: |
-      blacklist list              查看黑名单
-      blacklist add <QQ号> [QQ号...]   加入黑名单
-      blacklist remove <QQ号> [QQ号...] 移出黑名单
-
+    description: 黑名单管理
 messages:
   generating: 视频生成中，请耐心等待...
-  empty: '[提示] 请输入提示词'
+  enterCollect: 已进入收集模式，请继续发送图片/文字。发送「开始」触发生成，发送「取消」退出。当前已收集: 0 张图片, 0 段文字
+  collectUpdate: 当前已收集: {images} 张图片, 文字已更新
+  collectTimeout: 收集超时，已自动退出
+  empty: '[提示] 请输入提示词或上传图片'
   noApi: '[提示] 未配置可用API'
   fail: '[提示] 视频生成失败'
   noContent: （未返回任何视频内容）
   templateError: （模板配置错误）
   txt2videoDisabled: '[提示] 文生视频功能未启用'
   img2videoDisabled: '[提示] 图生视频功能未启用'
-  rateLimit: '[提示] 调用次数已达上限，请稍后再试'
-  needAssets: '[提示] 图生视频需要正确配置 assets 服务（selfUrl 未正确设置或服务未启动）'
-  blacklisted: '[提示] 你已被加入黑名单，无法使用视频生成功能'
-  noPermission: '[提示] 你没有权限管理黑名单'
+  rateLimit: '[提示] 调用次数已达上限'
+  needAssets: '[提示] 图生视频需要正确配置 assets 服务'
+  blacklisted: '[提示] 你已被加入黑名单'
+  noPermission: '[提示] 无权限管理黑名单'
   blacklistAddSuccess: 已将 {targets} 加入黑名单
   blacklistRemoveSuccess: 已将 {targets} 移出黑名单
-  blacklistAddFail: '{targets} 已在黑名单中或无效'
-  blacklistRemoveFail: '{targets} 不在黑名单中'
-  invalidUserId: '无效的QQ号：{targets}'
-  blacklistListEmpty: 当前黑名单为空
+  blacklistAddFail: '{targets} 已在黑名单或无效'
+  blacklistRemoveFail: '{targets} 不在黑名单'
+  invalidUserId: 无效QQ号：{targets}
+  blacklistListEmpty: 黑名单为空
   blacklistListTitle: '当前黑名单：'
-  noLastTask: 没有上一次生成记录，无法重绘
+  noLastTask: 没有上一次记录，无法重绘
   redrawing: 正在重绘上一次文生视频...
-  redrawImg2Video: '[提示] 重绘仅支持文生视频任务，图生视频任务请直接发起新的图生视频指令'
+  redrawImg2Video: '[提示] 重绘仅支持文生视频'
+  cancelCollect: 已取消收集模式
+  pollWaiting: 视频生成中（异步轮询），请稍后...

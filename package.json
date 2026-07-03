@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-ai-video",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Koishi AI 视频生成插件，支持文生视频、图生视频",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
