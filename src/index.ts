@@ -14,6 +14,90 @@ const logger = new Logger('ai-video')
 
 type Infer<T> = T extends Schema<infer U> ? U : never
 
+let sharp: any
+try {
+  sharp = require('sharp')
+} catch {}
+
+function guessAdapterType(endpoint: string): 'chat' | 'flat' {
+  try {
+    const url = new URL(endpoint)
+    const port = url.port
+    if (port === '7860' || port === '5000' || port === '8888') return 'flat'
+  } catch {}
+  return 'chat'
+}
+
+function compressImage(buffer: Buffer, cfg: any): Promise<Buffer> {
+  if (!sharp || !cfg.imageCompression?.enable) return Promise.resolve(buffer)
+  const { maxWidth, maxHeight, quality } = cfg.imageCompression
+  return sharp(buffer)
+    .resize({
+      width: maxWidth,
+      height: maxHeight,
+      fit: 'inside',
+      withoutEnlargement: true,
+    })
+    .jpeg({ quality: quality || 80 })
+    .toBuffer()
+    .catch(() => buffer)
+}
+
+async function downloadAndCompress(url: string, cfg: any): Promise<string | null> {
+  try {
+    const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 30000 })
+    let buffer = Buffer.from(res.data)
+    const contentType = typeof res.headers['content-type'] === 'string' ? res.headers['content-type'] : ''
+    let mime = 'image/png'
+    if (/^image\/[a-zA-Z0-9.+-]+/.test(contentType)) {
+      mime = contentType.split(';')[0].trim()
+    } else {
+      const ext = url.replace(/[?#].*$/, '').split('.').pop()?.toLowerCase() || 'png'
+      const mimeMap: Record<string, string> = {
+        png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+        gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+        svg: 'image/svg+xml', ico: 'image/x-icon', tiff: 'image/tiff',
+        tif: 'image/tiff', avif: 'image/avif', heic: 'image/heic', heif: 'image/heif',
+      }
+      mime = mimeMap[ext] || 'image/png'
+    }
+    buffer = await compressImage(buffer, cfg)
+    return `data:${mime};base64,${buffer.toString('base64')}`
+  } catch (e) {
+    logger.warn('下载或压缩图片失败', url, e)
+    return null
+  }
+}
+
+const apiEntrySchema = Schema.object({
+  enable: Schema.boolean().default(true).description('启用'),
+  adapterType: Schema.union([
+    Schema.const('').description('自动'),
+    Schema.const('chat').description('Chat格式'),
+    Schema.const('flat').description('平铺格式'),
+  ]).default('').description('接口类型（留空自动根据端口判断）'),
+  endpoint: Schema.string().default('https://apihub.agnes-ai.com/v1/videos').description('端点'),
+  apiKey: Schema.string().role('secret').default('').description('密钥'),
+  model: Schema.string().default('agnes-video-v2.0').description('模型'),
+  img2videoModel: Schema.string().default('').description('图生视频模型'),
+  videoDuration: Schema.number().default(0).description('默认视频时长（秒）'),
+  videoResolution: Schema.string().default('').description('默认视频分辨率（宽x高）'),
+  txt2videoPrompt: Schema.string().default('').description('文生视频模板'),
+  img2videoPrompt: Schema.string().default('').description('图生视频模板'),
+  customHeaders: Schema.string().role('textarea')
+    .default('{"Authorization":"Bearer {apiKey}","Content-Type":"application/json"}')
+    .description('自定义请求头（JSON）'),
+  bodyTemplate: Schema.string().role('textarea')
+    .default(JSON.stringify({
+      txt2videoBody: { model: '{model}', prompt: '{prompt}', height: 768, width: 1152, num_frames: 121, frame_rate: 24 },
+      img2videoBody: { model: '{model}', prompt: '{prompt}', image: '{url}', height: 768, width: 1152, num_frames: 121, frame_rate: 24 },
+      responseVideoPath: 'remixed_from_video_id',
+      pollUrlTemplate: 'https://apihub.agnes-ai.com/agnesapi?video_id={task_id}',
+      taskIdPath: 'video_id',
+    }, null, 2))
+    .description('自定义请求体（JSON）'),
+})
+
 export const Config = Schema.intersect([
   Schema.object({
     debug: Schema.boolean().default(false).description('开启调试模式'),
@@ -37,6 +121,40 @@ export const Config = Schema.intersect([
   }).description('基本设置'),
 
   Schema.object({
+    imageCompression: Schema.object({
+      enable: Schema.boolean().default(false).description('启用图片压缩'),
+      maxWidth: Schema.number().default(1024).description('最大宽度'),
+      maxHeight: Schema.number().default(1024).description('最大高度'),
+      quality: Schema.number().default(80).description('压缩质量(0-100)'),
+    }).description('图片压缩设置'),
+    imageInputAsBase64: Schema.boolean().default(false).description('图生视频输入转为Base64'),
+    presetPrompts: Schema.array(Schema.object({
+      name: Schema.string().required().description('预设名称'),
+      keywords: Schema.array(String).default([]).description('触发关键词'),
+      template: Schema.string().default('{prompt}').description('提示词模板，支持 {prompt} {keyword}'),
+    })).default([]).description('预置提示词列表'),
+  }).description('扩展功能'),
+
+  Schema.object({
+    apiStrategy: Schema.union([
+      Schema.const('sequence').description('顺序'),
+      Schema.const('roundrobin').description('轮询'),
+    ]).default('roundrobin').description('调度策略'),
+    primaryApiList: Schema.array(apiEntrySchema).default([]).description('主模型API列表'),
+  }).description('主模型设置'),
+
+  Schema.object({
+    secondaryApi: Schema.object({
+      enable: Schema.boolean().default(false).description('启用副模型'),
+      strategy: Schema.union([
+        Schema.const('sequence').description('顺序'),
+        Schema.const('roundrobin').description('轮询'),
+      ]).default('roundrobin').description('调度策略'),
+      list: Schema.array(apiEntrySchema).default([]).description('副模型API列表（留空则使用主模型列表）'),
+    }).description('副模型配置（启用后 video2 使用此配置）'),
+  }).description('副模型设置'),
+
+  Schema.object({
     proxyEnabled: Schema.boolean().default(false).description('启用代理'),
     proxyProtocol: Schema.union([Schema.const('http'), Schema.const('https')]).default('http').description('代理协议'),
     proxyHost: Schema.string().default('').description('代理主机地址'),
@@ -45,51 +163,6 @@ export const Config = Schema.intersect([
     proxyUsername: Schema.string().default('').description('代理用户名'),
     proxyPassword: Schema.string().role('secret').default('').description('代理密码'),
   }).description('代理设置'),
-
-  Schema.object({
-    useCustomApi: Schema.boolean().default(false).description('使用自定义API'),
-    apiEndpoint: Schema.string().default('https://apihub.agnes-ai.com/v1/videos').description('API端点'),
-    apiKey: Schema.string().role('secret').default('').description('API密钥'),
-    model: Schema.string().default('agnes-video-v2.0').description('模型'),
-    img2videoModel: Schema.string().default('').description('图生视频模型'),
-    videoDuration: Schema.number().default(0).description('默认视频时长（秒）'),
-    videoResolution: Schema.string().default('').description('默认视频分辨率（宽x高）'),
-    txt2videoPrompt: Schema.string().default('').description('文生视频提示模板'),
-    img2videoPrompt: Schema.string().default('').description('图生视频提示模板'),
-    customHeaders: Schema.string().role('textarea').default('{}').description('自定义请求头(JSON)'),
-  }).description('内置API'),
-
-  Schema.object({
-    apiStrategy: Schema.union([
-      Schema.const('sequence').description('顺序使用'),
-      Schema.const('roundrobin').description('轮询使用')
-    ]).default('roundrobin').description('API调用策略'),
-    customApiList: Schema.array(
-      Schema.object({
-        enable: Schema.boolean().default(true).description('启用'),
-        endpoint: Schema.string().default('https://apihub.agnes-ai.com/v1/videos').description('API端点'),
-        apiKey: Schema.string().role('secret').default('').description('API密钥'),
-        model: Schema.string().default('agnes-video-v2.0').description('模型'),
-        img2videoModel: Schema.string().default('').description('图生视频模型'),
-        videoDuration: Schema.number().default(0).description('默认视频时长（秒）'),
-        videoResolution: Schema.string().default('').description('默认视频分辨率（宽x高）'),
-        txt2videoPrompt: Schema.string().default('').description('文生视频提示模板'),
-        img2videoPrompt: Schema.string().default('').description('图生视频提示模板'),
-        customHeaders: Schema.string().role('textarea')
-          .default('{"Authorization":"Bearer {apiKey}","Content-Type":"application/json"}')
-          .description('自定义请求头(JSON)'),
-        bodyTemplate: Schema.string().role('textarea')
-          .default(JSON.stringify({
-            txt2videoBody: { model: '{model}', prompt: '{prompt}', height: 768, width: 1152, num_frames: 121, frame_rate: 24 },
-            img2videoBody: { model: '{model}', prompt: '{prompt}', image: '{url}', height: 768, width: 1152, num_frames: 121, frame_rate: 24 },
-            responseVideoPath: 'remixed_from_video_id',
-            pollUrlTemplate: 'https://apihub.agnes-ai.com/agnesapi?video_id={task_id}',
-            taskIdPath: 'video_id',
-          }, null, 2))
-          .description('自定义请求体(JSON模板)'),
-      })
-    ).default([]).description('自定义API列表'),
-  }).description('自定义API配置'),
 
   Schema.object({
     blacklistAdmins: Schema.array(String).default([]).description('管理员QQ号'),
@@ -140,6 +213,7 @@ interface CollectSession {
   prompt: string
   imageUrl: string
   timer: NodeJS.Timeout
+  presetName?: string
 }
 
 interface LastTask {
@@ -164,6 +238,7 @@ interface ParsedApi {
   img2videoPrompt: string
   model: string
   img2videoModel: string
+  adapterType: 'chat' | 'flat'
 }
 
 export async function apply(ctx: any, cfg: Infer<typeof Config>) {
@@ -176,7 +251,8 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
 
   const collectSessions = new Map<string, CollectSession>()
   const lastTaskMap = new Map<string, LastTask>()
-  let apiRoundRobinIdx = 0
+  let primaryRoundRobinIdx = 0
+  let secondaryRoundRobinIdx = 0
   const apiCallTimestamps: number[] = []
 
   ctx.model.extend('ai_video_blacklist', { id: 'string', createdAt: 'date' }, { primary: 'id' })
@@ -206,6 +282,12 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
         for (const [k, v] of Object.entries(custom))
           headers[k] = typeof v === 'string' ? v.replace(/\{apiKey\}/g, entry.apiKey || '') : String(v)
       } catch { }
+    }
+    let adapterType: 'chat' | 'flat'
+    if (entry.adapterType && entry.adapterType !== '') {
+      adapterType = entry.adapterType
+    } else {
+      adapterType = guessAdapterType(entry.endpoint)
     }
     let txt2videoBody, img2videoBody, responseVideoPath, pollUrlTemplate, taskIdPath
     if (entry.bodyTemplate) {
@@ -238,51 +320,32 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
       img2videoPrompt: entry.img2videoPrompt || '',
       model: entry.model,
       img2videoModel: entry.img2videoModel || '',
+      adapterType,
     }
   }
 
-  function buildBuiltinApi(): ParsedApi {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`
-    if (cfg.customHeaders) {
-      try {
-        const custom = JSON.parse(cfg.customHeaders)
-        for (const [k, v] of Object.entries(custom))
-          headers[k] = typeof v === 'string' ? v.replace(/\{apiKey\}/g, cfg.apiKey || '') : String(v)
-      } catch { }
-    }
-    return {
-      endpoint: cfg.apiEndpoint || 'https://apihub.agnes-ai.com/v1/videos',
-      headers,
-      txt2videoBody: { model: '{model}', prompt: '{prompt}', duration: '{duration}', size: '{size}' },
-      img2videoBody: { model: '{model}', prompt: '{prompt}', duration: '{duration}', size: '{size}', image_url: '{url}' },
-      responseVideoPath: 'video_url',
-      pollUrlTemplate: '',
-      taskIdPath: '',
-      method: 'POST',
-      videoDuration: cfg.videoDuration || 0,
-      videoResolution: cfg.videoResolution || '',
-      txt2videoPrompt: cfg.txt2videoPrompt || '',
-      img2videoPrompt: cfg.img2videoPrompt || '',
-      model: cfg.model || 'agnes-video-v2.0',
-      img2videoModel: cfg.img2videoModel || '',
-    }
-  }
-
-  function getApi(): ParsedApi | null {
-    if (cfg.useCustomApi) {
-      const entries = cfg.customApiList.filter(e => e.enable)
+  function getApi(secondary = false): ParsedApi | null {
+    if (secondary && cfg.secondaryApi?.enable) {
+      const list = cfg.secondaryApi.list?.length ? cfg.secondaryApi.list : cfg.primaryApiList
+      if (!list?.length) return null
+      const entries = list.filter(e => e.enable)
       if (!entries.length) return null
       const apis = entries.map(parseApiEntry).filter(Boolean) as ParsedApi[]
       if (!apis.length) return null
-      if (cfg.apiStrategy === 'sequence') return apis[0]
-      const api = apis[apiRoundRobinIdx % apis.length]
-      apiRoundRobinIdx++
+      const strategy = cfg.secondaryApi.strategy || 'roundrobin'
+      if (strategy === 'sequence') return apis[0]
+      const api = apis[secondaryRoundRobinIdx % apis.length]
+      secondaryRoundRobinIdx++
       return api
-    } else {
-      if (!cfg.apiEndpoint && !cfg.apiKey) return null
-      return buildBuiltinApi()
     }
+    const entries = cfg.primaryApiList.filter(e => e.enable)
+    if (!entries.length) return null
+    const apis = entries.map(parseApiEntry).filter(Boolean) as ParsedApi[]
+    if (!apis.length) return null
+    if (cfg.apiStrategy === 'sequence') return apis[0]
+    const api = apis[primaryRoundRobinIdx % apis.length]
+    primaryRoundRobinIdx++
+    return api
   }
 
   function resolveTemplate(templateObj: any, vars: Record<string, any>): any {
@@ -372,14 +435,44 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
     try { return JSON.parse(JSON.stringify(obj).split(sensitive).join('***')) } catch { return obj }
   }
 
-  async function customGenerateVideo(session: any, api: ParsedApi, prompt: string, imageUrl: string = ''): Promise<string | null> {
+  function applyPresetPrompts(prompt: string, presetName?: string): string {
+    if (!prompt) return prompt
+    if (presetName && cfg.presetPrompts) {
+      const preset = cfg.presetPrompts.find(p => p.name === presetName)
+      if (preset) {
+        return preset.template.replace(/\{prompt\}/g, prompt).replace(/\{keyword\}/g, preset.keywords?.[0] || '')
+      }
+    }
+    if (cfg.presetPrompts && cfg.presetPrompts.length) {
+      for (const preset of cfg.presetPrompts) {
+        if (preset.keywords?.length) {
+          for (const kw of preset.keywords) {
+            if (prompt.toLowerCase().includes(kw.toLowerCase())) {
+              return preset.template.replace(/\{prompt\}/g, prompt).replace(/\{keyword\}/g, kw)
+            }
+          }
+        }
+      }
+    }
+    return prompt
+  }
+
+  async function customGenerateVideo(
+    session: any,
+    api: ParsedApi,
+    prompt: string,
+    imageUrl: string = '',
+    presetName?: string
+  ): Promise<string | null> {
     const isImg2Video = !!imageUrl
     const model = isImg2Video ? (api.img2videoModel || api.model) : api.model
     const duration = api.videoDuration || cfg.videoDuration || 5
     const resolution = api.videoResolution || cfg.videoResolution || '1024x576'
     const promptTemplate = isImg2Video ? api.img2videoPrompt : api.txt2videoPrompt
-    let finalPrompt = prompt
-    if (promptTemplate) finalPrompt = promptTemplate.replace('{prompt}', prompt).replace('{url}', imageUrl)
+
+    let processedPrompt = applyPresetPrompts(prompt, presetName)
+    let finalPrompt = processedPrompt
+    if (promptTemplate) finalPrompt = promptTemplate.replace('{prompt}', processedPrompt).replace('{url}', imageUrl)
 
     const bodyTemplate = isImg2Video ? api.img2videoBody : api.txt2videoBody
     const vars: Record<string, any> = {
@@ -388,7 +481,14 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
       duration,
       size: resolution,
     }
-    if (isImg2Video) vars.url = imageUrl
+    if (isImg2Video) {
+      if (cfg.imageInputAsBase64 && imageUrl) {
+        const b64 = await downloadAndCompress(imageUrl, cfg)
+        vars.url = b64 || imageUrl
+      } else {
+        vars.url = imageUrl
+      }
+    }
 
     let body
     try { body = resolveTemplate(bodyTemplate, vars) } catch {
@@ -429,20 +529,20 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
     }
   }
 
-  async function generateVideos(session: any, prompt: string, imageUrl: string, count: number) {
+  async function generateVideos(session: any, prompt: string, imageUrl: string, count: number, presetName?: string, secondary = false) {
     const videoUrls: string[] = []
     for (let i = 0; i < count; i++) {
       if (!checkRateLimit()) {
         await safeSend(session, cfg.messages.rateLimit)
         break
       }
-      const api = getApi()
+      const api = getApi(secondary)
       if (!api) {
         await safeSend(session, cfg.messages.noApi)
         break
       }
       recordApiCall()
-      const url = await customGenerateVideo(session, api, prompt, imageUrl)
+      const url = await customGenerateVideo(session, api, prompt, imageUrl, presetName)
       if (url) videoUrls.push(url)
       if (i < count - 1) await new Promise(r => setTimeout(r, 1000))
     }
@@ -478,12 +578,56 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
     }, cfg.collectTimeout * 1000)
   }
 
-  ctx.command('video [text]', 'AI视频生成')
+  ctx.command('video [text]', 'AI视频生成（主模型）')
+    .option('preset', '-p <preset:string>')
+    .action(async ({ session, options }: any, text?: string) => {
+      if (!session) return
+      if (await isBlacklisted(session.userId)) return safeSend(session, cfg.messages.blacklisted)
+
+      const preset = options?.preset || undefined
+      const hasImage = h.select(session.elements, 'img').length > 0
+
+      if (preset && text) {
+        if (!cfg.enableTxt2Video && !hasImage) return safeSend(session, cfg.messages.txt2videoDisabled)
+        if (hasImage && !cfg.enableImg2Video) return safeSend(session, cfg.messages.img2videoDisabled)
+        let imageUrl = ''
+        if (hasImage) {
+          const assets = (ctx as any).assets
+          if (!assets) return safeSend(session, cfg.messages.needAssets)
+          const img = h.select(session.elements, 'img')[0]
+          try { const up = await assets.upload(img.attrs.src, 'ref_image.jpg'); if (/^https?:\/\//.test(up)) imageUrl = up } catch { }
+        }
+        await safeSend(session, cfg.messages.generating)
+        return generateVideos(session, text, imageUrl, cfg.maxVideos, preset, false)
+      }
+
+      const key = `${session.guildId || 'private'}-${session.userId}`
+      if (collectSessions.has(key)) return safeSend(session, '你已在收集模式中')
+      if (!hasImage && !cfg.enableTxt2Video) return safeSend(session, cfg.messages.txt2videoDisabled)
+      if (hasImage && !cfg.enableImg2Video) return safeSend(session, cfg.messages.img2videoDisabled)
+
+      let imageUrl = ''
+      if (hasImage) {
+        const assets = (ctx as any).assets
+        if (!assets) return safeSend(session, cfg.messages.needAssets)
+        const img = h.select(session.elements, 'img')[0]
+        try { const up = await assets.upload(img.attrs.src, 'ref_image.jpg'); if (/^https?:\/\//.test(up)) imageUrl = up } catch { }
+      }
+
+      const collect: CollectSession = { prompt: text || '', imageUrl, timer: null as any, presetName: preset }
+      collect.timer = startTimer(session, key, collect)
+      collectSessions.set(key, collect)
+      await safeSend(session, cfg.messages.enterCollect)
+    })
+
+  ctx.command('video2 [text]', '使用副模型生成视频')
     .action(async ({ session }: any, text?: string) => {
       if (!session) return
       if (await isBlacklisted(session.userId)) return safeSend(session, cfg.messages.blacklisted)
+
       const key = `${session.guildId || 'private'}-${session.userId}`
       if (collectSessions.has(key)) return safeSend(session, '你已在收集模式中')
+
       const hasImage = h.select(session.elements, 'img').length > 0
       if (!hasImage && !cfg.enableTxt2Video) return safeSend(session, cfg.messages.txt2videoDisabled)
       if (hasImage && !cfg.enableImg2Video) return safeSend(session, cfg.messages.img2videoDisabled)
@@ -523,8 +667,12 @@ export async function apply(ctx: any, cfg: Infer<typeof Config>) {
       clearTimeout(collect.timer)
       collectSessions.delete(key)
       if (!collect.prompt && !collect.imageUrl) return safeSend(session, cfg.messages.empty)
+      if (!cfg.enableTxt2Video && !collect.imageUrl) return safeSend(session, cfg.messages.txt2videoDisabled)
+      if (!cfg.enableImg2Video && collect.imageUrl) return safeSend(session, cfg.messages.img2videoDisabled)
+
+      const isVideo2 = session.content?.startsWith('video2') ?? false
       await safeSend(session, cfg.messages.generating)
-      return generateVideos(session, collect.prompt || '默认', collect.imageUrl, cfg.maxVideos)
+      return generateVideos(session, collect.prompt || '默认', collect.imageUrl, cfg.maxVideos, collect.presetName, isVideo2)
     }
 
     if (imgs.length > 0 && !collect.imageUrl) {

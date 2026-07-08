@@ -1,7 +1,10 @@
 commands:
   video:
-    description: AI视频生成
+    description: AI视频生成（支持预设提示词 -p <名称>）
     usage: video [初始提示词] 进入收集，继续发送文字/图片，输入「开始」生成
+  video2:
+    description: 使用副模型生成视频
+    usage: video2 [初始提示词] 进入收集模式，操作同 video
   redraw:
     description: 重绘上一次文生视频
   blacklist:
